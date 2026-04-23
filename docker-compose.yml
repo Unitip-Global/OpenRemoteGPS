@@ -1,0 +1,181 @@
+# OpenRemoteGPS stack — local reproduction of the Railway `OpenRemoteGPS` env.
+#
+# Source-of-truth for service graph, images, ports, volumes, healthchecks.
+# Secret values live in `.env` (copy `.env.example`).
+#
+# Start: docker compose up -d
+# Stop:  docker compose down
+# Wipe:  docker compose down -v   (deletes volumes — data loss)
+
+name: openremote-gps
+
+services:
+  timescaledb:
+    image: timescale/timescaledb-ha:pg15-latest
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB}
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      PGDATA: ${PGDATA}
+    volumes:
+      - timescale-data:/home/postgres/pgdata/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER} -d ${POSTGRES_DB}"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+    restart: unless-stopped
+
+  keycloak:
+    image: openremote/keycloak:23.0.7.6
+    depends_on:
+      timescaledb:
+        condition: service_healthy
+    environment:
+      TZ: ${TZ}
+      KEYCLOAK_ADMIN: ${KEYCLOAK_ADMIN}
+      KEYCLOAK_ADMIN_PASSWORD: ${KEYCLOAK_ADMIN_PASSWORD}
+      KC_DB: ${KC_DB}
+      KC_DB_URL: ${KC_DB_URL}
+      KC_DB_USERNAME: ${KC_DB_USERNAME}
+      KC_DB_PASSWORD: ${KC_DB_PASSWORD}
+      KC_HOSTNAME: ${KC_HOSTNAME}
+      KC_HOSTNAME_STRICT: ${KC_HOSTNAME_STRICT}
+      KC_HTTP_ENABLED: ${KC_HTTP_ENABLED}
+      KC_HTTP_PORT: ${KC_HTTP_PORT}
+      KC_HTTP_RELATIVE_PATH: ${KC_HTTP_RELATIVE_PATH}
+      KC_PROXY: ${KC_PROXY}
+      KC_PROXY_HEADERS: ${KC_PROXY_HEADERS}
+    ports:
+      - "8081:8080"
+    restart: unless-stopped
+
+  manager:
+    image: openremote/manager:latest
+    depends_on:
+      timescaledb:
+        condition: service_healthy
+      keycloak:
+        condition: service_started
+    environment:
+      TZ: ${TZ}
+      OR_ADMIN_PASSWORD: ${OR_ADMIN_PASSWORD}
+      OR_DB_VENDOR: ${OR_DB_VENDOR}
+      OR_DB_HOST: ${OR_DB_HOST}
+      OR_DB_PORT: ${OR_DB_PORT}
+      OR_DB_NAME: ${OR_DB_NAME}
+      OR_DB_USER: ${OR_DB_USER}
+      OR_DB_PASSWORD: ${OR_DB_PASSWORD}
+      OR_HOSTNAME: ${OR_HOSTNAME}
+      OR_HTTP_PORT: ${OR_HTTP_PORT}
+      OR_SSL_PORT: ${OR_SSL_PORT}
+      OR_KEYCLOAK_HOST: ${OR_KEYCLOAK_HOST}
+      OR_KEYCLOAK_PORT: ${OR_KEYCLOAK_PORT}
+      OR_KEYCLOAK_SECURE: ${OR_KEYCLOAK_SECURE}
+      OR_SETUP_RUN_ON_RESTART: ${OR_SETUP_RUN_ON_RESTART}
+      OR_SETUP_TYPE: ${OR_SETUP_TYPE}
+    volumes:
+      - manager-deployment:/deployment
+      - manager-storage:/storage
+    ports:
+      - "8080:8080"
+    restart: unless-stopped
+
+  traccar:
+    image: traccar/traccar:latest
+    depends_on:
+      timescaledb:
+        condition: service_healthy
+    environment:
+      APP_ENV: ${APP_ENV}
+      APP_NAME: ${APP_NAME}
+      ADMIN_EMAIL: ${ADMIN_EMAIL}
+      ADMIN_PASSWORD: ${ADMIN_PASSWORD}
+      TRACCAR_HOST: ${TRACCAR_HOST}
+      TRACCAR_PORT: ${TRACCAR_PORT}
+      GPS_PORT: ${GPS_PORT}
+      TRACCAR_DB_USER: ${TRACCAR_DB_USER}
+      TRACCAR_DB_PASSWORD: ${TRACCAR_DB_PASSWORD}
+    volumes:
+      - traccar-data:/opt/traccar/data
+    ports:
+      - "8082:8082"           # Traccar web UI / REST
+      - "5055:5055"           # OsmAnd / device TCP ingest
+    restart: unless-stopped
+
+  gps-adapter:
+    build:
+      context: ./services/gps-adapter
+      dockerfile: Dockerfile
+    depends_on:
+      manager:
+        condition: service_started
+      traccar:
+        condition: service_started
+      keycloak:
+        condition: service_started
+    environment:
+      GIN_MODE: ${GIN_MODE}
+      OPENREMOTE_URL: ${OPENREMOTE_URL}
+      OPENREMOTE_REALM: ${OPENREMOTE_REALM}
+      OPENREMOTE_CLIENT_ID: ${OPENREMOTE_CLIENT_ID}
+      OPENREMOTE_USER: ${OPENREMOTE_USER}
+      OPENREMOTE_PASSWORD: ${OPENREMOTE_PASSWORD}
+      KEYCLOAK_URL: ${KEYCLOAK_URL}
+      TRACCAR_URL: ${TRACCAR_URL}
+      TRACCAR_USER: ${TRACCAR_USER}
+      TRACCAR_PASSWORD: ${TRACCAR_PASSWORD}
+      ADAPTER_SECRET_KEY: ${ADAPTER_SECRET_KEY}
+      PORT: "8080"
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:8080/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+    restart: unless-stopped
+
+  openremote-nginx:
+    image: insiderfyr/openremote-nginx:latest
+    depends_on:
+      manager:
+        condition: service_started
+      keycloak:
+        condition: service_started
+      gps-adapter:
+        condition: service_started
+    environment:
+      TZ: ${TZ}
+      OR_HOSTNAME: ${OR_HOSTNAME}
+      OR_MANAGER_URL: ${OR_MANAGER_URL}
+      OR_GPS_ADAPTER_URL: ${OR_GPS_ADAPTER_URL}
+      OR_TRACCAR_URL: ${OR_TRACCAR_URL}
+      ADAPTER_SECRET_KEY: ${ADAPTER_SECRET_KEY}
+    ports:
+      - "8443:8080"
+    restart: unless-stopped
+
+  backup:
+    build:
+      context: ./services/backup
+      dockerfile: Dockerfile
+    depends_on:
+      timescaledb:
+        condition: service_healthy
+    environment:
+      POSTGRES_HOST: timescaledb
+      POSTGRES_DB: ${POSTGRES_DB}
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      BACKUP_DIR: ${BACKUP_DIR}
+    volumes:
+      - backup-data:/backups
+    # On Railway this runs on cron "0 2 * * *".
+    # Locally, run on demand: docker compose run --rm backup
+    profiles: ["backup"]
+
+volumes:
+  timescale-data:
+  manager-deployment:
+  manager-storage:
+  traccar-data:
+  backup-data:

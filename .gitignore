@@ -1,0 +1,20 @@
+.env
+.env.*
+!.env.example
+
+# Local overrides
+docker-compose.override.yml
+
+# IDE
+.vscode/
+.idea/
+*.swp
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Secrets accidentally dumped
+*.secret
+*.key
+*.pem

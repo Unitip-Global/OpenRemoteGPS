@@ -1,0 +1,17 @@
+# Railway service: traccar  (GPS device ingest)
+# Service id: baaea731-6af9-4010-b066-36981e5c2714
+# Private URL: http://traccar.railway.internal:8082
+# Public TCP proxy: gondola.proxy.rlwy.net:40590 -> :5055
+# Volume: traccar-volume -> /opt/traccar/data
+
+[build]
+builder = "RAILPACK"
+
+[deploy]
+numReplicas = 1
+restartPolicyType = "ON_FAILURE"
+restartPolicyMaxRetries = 10
+region = "us-east4-eqdc4a"
+
+# Volume mount (Railway manages the volume; this documents it)
+# requiredMountPath = "/opt/traccar/data"

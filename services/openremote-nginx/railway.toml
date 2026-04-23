@@ -1,16 +1,16 @@
 # Railway service: OpenRemoteGPS  (public edge / nginx)
 # Service id: 7ee47aaf-8cf0-41b1-b937-8ba418da3440
 # Public domain: gps.unitip.global
-# Image: insiderfyr/openremote-nginx:latest
+# Built from repo root Dockerfile (plain nginx:alpine + nginx.conf).
 
 [build]
-builder = "RAILPACK"
+builder = "DOCKERFILE"
+dockerfilePath = "Dockerfile"
 
 [deploy]
 numReplicas = 1
 restartPolicyType = "ON_FAILURE"
 restartPolicyMaxRetries = 10
 region = "us-east4-eqdc4a"
-
-[deploy.image]
-image = "insiderfyr/openremote-nginx:latest"
+healthcheckPath = "/health"
+healthcheckTimeout = 30

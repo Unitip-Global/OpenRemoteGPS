@@ -10,7 +10,7 @@ Public entry point: **https://gps.unitip.global**
 
 | Service | Image / Build | Purpose | Public |
 |---|---|---|---|
-| `openremote-nginx` | `insiderfyr/openremote-nginx:latest` | Edge / TLS termination for `gps.unitip.global` | ✅ |
+| `openremote-nginx` | Dockerfile at repo root (`nginx:alpine` + `nginx.conf`) | Edge for `gps.unitip.global`; TLS terminated at Railway edge | ✅ |
 | `manager` | `openremote/manager:latest` | OpenRemote core — assets, rules, MQTT | internal |
 | `keycloak` | `openremote/keycloak:23.0.7.6` | Identity provider (OAuth2 / OIDC) | internal |
 | `traccar` | Traccar server | GPS device ingest (TCP `:5055`, HTTP `:8082`) | TCP proxy |
@@ -23,16 +23,19 @@ Public entry point: **https://gps.unitip.global**
 ```
 OpenRemoteSetup/
 ├── README.md                 # this file
+├── Dockerfile                # builds the openremote-nginx edge image
+├── nginx.conf                # routes / → manager, /auth → keycloak
+├── railway.toml              # Railway build/deploy config for the nginx service
 ├── docker-compose.yml        # full stack, local dev
 ├── .env.example              # all env vars (secrets as placeholders)
 ├── services/
-│   ├── openremote-nginx/     # railway.toml + vars.env
-│   ├── manager/
-│   ├── keycloak/
-│   ├── traccar/
-│   ├── timescaledb/
-│   ├── gps-adapter/          # + SOURCE.md (where the Go code lives)
-│   └── backup/               # + SOURCE.md
+│   ├── openremote-nginx/     # vars.env only (env var reference)
+│   ├── manager/              # vars.env
+│   ├── keycloak/             # vars.env
+│   ├── traccar/              # vars.env
+│   ├── timescaledb/          # vars.env
+│   ├── gps-adapter/          # vars.env + SOURCE.md (where the Go code lives)
+│   └── backup/               # vars.env + SOURCE.md
 └── docs/
     ├── TOPOLOGY.md           # data flow, ports, network
     ├── VARIABLES.md          # full variable reference
@@ -50,18 +53,22 @@ docker compose up -d
 # traccar UI → http://localhost:8082
 ```
 
-**Updating Railway:** change the relevant `services/<name>/railway.toml` or `vars.env` here, commit, then apply on Railway (manually via dashboard/CLI, or via CI/CD once wired up). This repo should always match prod — treat drift as a bug.
+**Updating Railway:**
+
+- **nginx edge (the only service built from this repo):** edit `nginx.conf`, `Dockerfile`, or root `railway.toml`, then `railway up` (links to project `ERP` / env `OpenRemoteGPS` / service `OpenRemoteGPS`). Commit the change after it's verified in prod.
+- **All other services:** pull public Docker images directly in Railway. Change image tags, env vars, or scaling in the Railway dashboard. Mirror the new values in `services/<name>/vars.env` here so this repo keeps matching prod — treat drift as a bug.
 
 **Rotating a secret:** update it on Railway first (env var), then update the placeholder value in `docs/SECRETS.md` tracking table. Never paste the real secret in this repo.
 
 ## Source code
 
-Two services in this stack are built from a `Dockerfile`, not from a public image:
+Services built from a `Dockerfile` rather than a public image:
 
-- `gps-adapter` — Go service; see `services/gps-adapter/SOURCE.md`
-- `backup` — cron + `pg_dump`; see `services/backup/SOURCE.md`
+- `openremote-nginx` — built from the root `Dockerfile` + `nginx.conf` in this repo; deployed via `railway up`.
+- `gps-adapter` — Go service; source lives elsewhere (see `services/gps-adapter/SOURCE.md`).
+- `backup` — cron + `pg_dump`; source lives elsewhere (see `services/backup/SOURCE.md`).
 
-The actual source for these lives elsewhere (see those `SOURCE.md` files). This repo captures the deployment configuration only.
+For `gps-adapter` and `backup`, this repo captures deployment configuration only — not the source.
 
 ## Related
 

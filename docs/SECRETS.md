@@ -1,42 +1,66 @@
 # Secrets — rotation checklist
 
-All secrets currently deployed in the Railway `OpenRemoteGPS` env are **weak and/or placeholder values**. This document is the tracking list for rotation. **Real values live only in Railway** — this repo stores names and placeholders.
+Single-service stack after the 2026-04-24 refactor. The only remaining
+service on Railway is `traccar`. All prior OpenRemote / Keycloak /
+Postgres / adapter credentials were retired when their services were
+deleted.
 
-## Secrets that must be rotated
+## Secrets in use today
 
-| Railway var | Current value (as of 2026-04-24) | Severity | Used by | Rotation action |
+| Railway var | Current value | Severity | Used by | Rotation action |
 |---|---|---|---|---|
-| `POSTGRES_PASSWORD` / `OR_DB_PASSWORD` / `KC_DB_PASSWORD` / `TRACCAR_DB_PASSWORD` | `o_parola_puternica` (literal "a strong password" — a placeholder, not one) | **Critical** | timescaledb, manager, keycloak, traccar, backup | 1) rotate in `timescaledb` service vars; 2) update in all four consumers; 3) restart manager + keycloak + traccar + backup |
-| `OR_ADMIN_PASSWORD` (master realm) | `secret` | **Critical** | manager, nginx | Master realm superadmin. Rotate; update any admin tooling that logs in as OpenRemote master admin |
-| unitip realm admin password | `__CHANGE_ME__` (24-char random generated 2026-04-24, stored in Railway `OPENREMOTE_PASSWORD` on GPS-Adapter service) | **Critical** | gps-adapter | Used by adapter to authenticate against Keycloak realm `unitip`. Rotate together with the Keycloak user in `unitip` realm |
-| `OPENREMOTE_PASSWORD` (gps-adapter) | mirrors unitip realm admin password | **Critical** | gps-adapter | Must match the Keycloak user's password in realm `unitip` |
-| `KEYCLOAK_ADMIN_PASSWORD` | `Admin` | **Critical** | keycloak | Rotate |
-| `TRACCAR_PASSWORD` / `ADMIN_PASSWORD` (traccar) | `Unitip123!` | High | traccar, gps-adapter | Rotate; update adapter var |
-| `ADAPTER_SECRET_KEY` | `6061d01001b71ed152ad24b6ff76af5e54ff0ba7fc2ef686f63e704326af4dfc` | Medium | nginx, gps-adapter | Already 32-byte hex — not weak, but shared. Rotate on suspicion only |
+| `ADMIN_PASSWORD` (traccar) | `Unitip123!` | **Critical** | traccar | Rotate via Traccar web UI (Account → Change password) after the first successful login, then replace the env var value with the new password so `ADMIN_EMAIL` auth still seeds identically on a fresh container. |
 
-## Shared-credential risk
+That's the whole list. If you spot another `__CHANGE_ME__` anywhere in
+this repo, it's stale documentation — file an issue or delete the line.
 
-The same Postgres user/password (`openremote` / `o_parola_puternica`) is used by **manager, keycloak, and traccar** against the same database. Anyone who reads one service's env reads the DB. Long-term fix: give each service its own DB user with only the privileges it needs.
+## What was removed (historical reference)
 
-## Behaviour flags worth reviewing (not secrets, but risky)
+Rotating these is a no-op now — the consumers are gone:
+
+- `POSTGRES_PASSWORD` / `OR_DB_PASSWORD` / `KC_DB_PASSWORD` /
+  `TRACCAR_DB_PASSWORD` (shared DB password, was `o_parola_puternica`)
+- `OR_ADMIN_PASSWORD` (was `secret`, used by OpenRemote manager)
+- `OPENREMOTE_PASSWORD` (gps-adapter OAuth2 password grant)
+- `KEYCLOAK_ADMIN_PASSWORD` (was `Admin`)
+- `ADAPTER_SECRET_KEY` (nginx ↔ adapter shared secret)
+- `unitip` Keycloak realm admin password (24-char random, generated 2026-04-24)
+
+If any of those values were ever reused outside this stack (Core ERP,
+personal accounts, etc.), rotate them in the other system — the fact that
+they're no longer in use here doesn't retroactively delete them from
+Core ERP's env.
+
+## Non-secret flags worth reviewing
 
 | Var | Current | Recommendation |
 |---|---|---|
-| `OR_SETUP_RUN_ON_RESTART` | `false` ✓ (flipped 2026-04-24) | Flipped on 2026-04-24 after the fleet platform was seeded. Keeping it `false` prevents OpenRemote from re-running its built-in setup and overwriting the `unitip` realm's assets/rules. |
-| `OR_KEYCLOAK_SECURE` | `false` | OK — TLS is terminated at the Railway edge; internal traffic is plaintext over the private network. Do not expose Keycloak directly. |
-| `OR_SSL_PORT` | `-1` | OK — same reason. |
+| `TZ` | `Europe/Bucharest` | OK — log timestamps readable, backup script still fires at 02:00 UTC regardless. |
+
+Traccar's own config (database URL, forward settings, etc.) is not an env
+var — it's baked into the `startCommand` override on the Railway service.
+If you rotate those, update the canonical copy in
+[services/traccar/SOURCE.md](../services/traccar/SOURCE.md) so the repo
+stays the record of truth.
 
 ## Rotation playbook
 
-1. Generate new value (e.g. `openssl rand -base64 32` for passwords, `openssl rand -hex 32` for `ADAPTER_SECRET_KEY`).
-2. Set it on Railway: `railway variables set KEY=VALUE --service <name> --environment OpenRemoteGPS`.
-3. For a password used by multiple services, update **all** of them before restarting any — otherwise services fail to connect mid-rotation.
-4. Redeploy affected services (Railway dashboard → "Redeploy" or `railway up`).
-5. Update any ERP-side reference (for example, Core ERP's `OpenRemoteProvider` may hold a client secret in its own env).
-6. Smoke-test: login to `https://gps.unitip.global`, check traccar UI, check `gps-adapter` `/health`, confirm Core ERP fleet module still ingests positions.
+For `ADMIN_PASSWORD`:
+
+1. Log in to https://gps.unitip.global as `admin@unitip.ro` with the
+   current password.
+2. Account menu → Change password → set a new strong value.
+3. Copy the new password into Railway: `railway variable set
+   ADMIN_PASSWORD='<new>' --service traccar --environment OpenRemoteGPS`.
+   (This matters for disaster recovery — if the H2 volume is ever wiped,
+   Traccar re-seeds from this env var.)
+4. Update any ERP-side / monitoring clients that log in with this
+   credential.
 
 ## What this repo stores vs what Railway stores
 
-- **This repo:** variable **names**, non-secret values (timezone, hostnames, ports, service URLs), and `__CHANGE_ME__` placeholders.
+- **This repo:** variable **names**, non-secret values (timezone, ports,
+  hostnames), and `__CHANGE_ME__` placeholders.
 - **Railway:** actual secret **values**. Treat Railway as the vault.
-- **Never:** commit real passwords, DB URIs with creds, `ADAPTER_SECRET_KEY`, etc., to this repo.
+- **Never:** commit real passwords, DB URIs with creds, etc., to this
+  repo.

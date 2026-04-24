@@ -1,195 +1,76 @@
-# OpenRemoteGPS stack — local reproduction of the Railway `OpenRemoteGPS` env.
+# Local reproduction of the Railway `OpenRemoteGPS` environment after the
+# 2026-04-24 refactor. Single service (Traccar) with an embedded H2 DB and
+# a sidecar cron-like backup loop — mirrors the Railway `startCommand`
+# override documented in services/traccar/SOURCE.md.
 #
-# Source-of-truth for service graph, images, ports, volumes, healthchecks.
-# Secret values live in `.env` (copy `.env.example`).
-#
-# Start: docker compose up -d
-# Stop:  docker compose down
-# Wipe:  docker compose down -v   (deletes volumes — data loss)
+# Start:     docker compose up -d
+# Stop:      docker compose down
+# Wipe:      docker compose down -v    (drops traccar-data — loses the H2 DB)
+# One-off backup:  docker compose exec traccar /opt/traccar/data/run_backup.sh
 
-name: openremote-gps
+name: traccar-gps
 
 services:
-  timescaledb:
-    image: timescale/timescaledb-ha:pg15-latest
-    environment:
-      POSTGRES_DB: ${POSTGRES_DB}
-      POSTGRES_USER: ${POSTGRES_USER}
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
-      PGDATA: ${PGDATA}
-    volumes:
-      - timescale-data:/home/postgres/pgdata/data
-    healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER} -d ${POSTGRES_DB}"]
-      interval: 10s
-      timeout: 5s
-      retries: 10
-    restart: unless-stopped
-
-  keycloak:
-    image: openremote/keycloak:23.0.7.6
-    depends_on:
-      timescaledb:
-        condition: service_healthy
-    environment:
-      TZ: ${TZ}
-      KEYCLOAK_ADMIN: ${KEYCLOAK_ADMIN}
-      KEYCLOAK_ADMIN_PASSWORD: ${KEYCLOAK_ADMIN_PASSWORD}
-      KC_DB: ${KC_DB}
-      KC_DB_URL: ${KC_DB_URL}
-      KC_DB_USERNAME: ${KC_DB_USERNAME}
-      KC_DB_PASSWORD: ${KC_DB_PASSWORD}
-      KC_HOSTNAME: ${KC_HOSTNAME}
-      KC_HOSTNAME_STRICT: ${KC_HOSTNAME_STRICT}
-      KC_HTTP_ENABLED: ${KC_HTTP_ENABLED}
-      KC_HTTP_PORT: ${KC_HTTP_PORT}
-      KC_HTTP_RELATIVE_PATH: ${KC_HTTP_RELATIVE_PATH}
-      KC_PROXY: ${KC_PROXY}
-      KC_PROXY_HEADERS: ${KC_PROXY_HEADERS}
-    ports:
-      - "8081:8080"
-    restart: unless-stopped
-
-  manager:
-    image: openremote/manager:latest
-    depends_on:
-      timescaledb:
-        condition: service_healthy
-      keycloak:
-        condition: service_started
-    environment:
-      TZ: ${TZ}
-      OR_ADMIN_PASSWORD: ${OR_ADMIN_PASSWORD}
-      OR_DB_VENDOR: ${OR_DB_VENDOR}
-      OR_DB_HOST: ${OR_DB_HOST}
-      OR_DB_PORT: ${OR_DB_PORT}
-      OR_DB_NAME: ${OR_DB_NAME}
-      OR_DB_USER: ${OR_DB_USER}
-      OR_DB_PASSWORD: ${OR_DB_PASSWORD}
-      OR_HOSTNAME: ${OR_HOSTNAME}
-      OR_HTTP_PORT: ${OR_HTTP_PORT}
-      OR_SSL_PORT: ${OR_SSL_PORT}
-      OR_KEYCLOAK_HOST: ${OR_KEYCLOAK_HOST}
-      OR_KEYCLOAK_PORT: ${OR_KEYCLOAK_PORT}
-      OR_KEYCLOAK_SECURE: ${OR_KEYCLOAK_SECURE}
-      OR_SETUP_RUN_ON_RESTART: ${OR_SETUP_RUN_ON_RESTART}
-      OR_SETUP_TYPE: ${OR_SETUP_TYPE}
-    volumes:
-      - manager-deployment:/deployment
-      - manager-storage:/storage
-    ports:
-      - "8080:8080"
-    restart: unless-stopped
-
   traccar:
     image: traccar/traccar:latest
-    depends_on:
-      timescaledb:
-        condition: service_healthy
     environment:
-      APP_ENV: ${APP_ENV}
-      APP_NAME: ${APP_NAME}
+      TZ: ${TZ:-Europe/Bucharest}
+      APP_ENV: ${APP_ENV:-production}
+      APP_NAME: ${APP_NAME:-traccar}
       ADMIN_EMAIL: ${ADMIN_EMAIL}
       ADMIN_PASSWORD: ${ADMIN_PASSWORD}
-      TRACCAR_HOST: ${TRACCAR_HOST}
-      TRACCAR_PORT: ${TRACCAR_PORT}
-      GPS_PORT: ${GPS_PORT}
-      TRACCAR_DB_USER: ${TRACCAR_DB_USER}
-      TRACCAR_DB_PASSWORD: ${TRACCAR_DB_PASSWORD}
+      TRACCAR_HOST: ${TRACCAR_HOST:-0.0.0.0}
+      TRACCAR_PORT: ${TRACCAR_PORT:-8082}
+      PORT: ${PORT:-8082}
+      GPS_PORT: ${GPS_PORT:-5027}
     volumes:
       - traccar-data:/opt/traccar/data
     ports:
-      - "8082:8082"           # Traccar web UI / REST
-      - "5055:5055"           # OsmAnd / device TCP ingest
+      - "8082:8082"         # Web UI / REST
+      - "5027:5027"         # Teltonika Codec 8/8E TCP
+    # Override entrypoint with the same wrapper we use on Railway: write
+    # traccar.xml with H2 + AUTO_SERVER, install the backup script, spawn
+    # the nightly loop, then exec the JVM.
+    entrypoint:
+      - sh
+      - -c
+      - |
+        cat > /opt/traccar/conf/traccar.xml <<'EOF'
+        <?xml version="1.0" encoding="UTF-8"?>
+        <!DOCTYPE properties SYSTEM "http://java.sun.com/dtd/properties.dtd">
+        <properties>
+        <entry key="database.driver">org.h2.Driver</entry>
+        <entry key="database.url">jdbc:h2:./data/database;AUTO_SERVER=TRUE</entry>
+        <entry key="database.user">sa</entry>
+        <entry key="database.password"></entry>
+        </properties>
+        EOF
+        mkdir -p /opt/traccar/data/backup
+        cat > /opt/traccar/data/run_backup.sh <<'BSCRIPT'
+        #!/bin/sh
+        set -e
+        ts=$(date -u +%Y%m%d_%H%M%S)
+        sql=/opt/traccar/data/backup/traccar_${ts}.sql
+        /opt/traccar/jre/bin/java -cp '/opt/traccar/lib/*' org.h2.tools.Script -url 'jdbc:h2:/opt/traccar/data/database;AUTO_SERVER=TRUE' -user sa -script "$sql"
+        gzip "$sql"
+        find /opt/traccar/data/backup -name 'traccar_*.sql.gz' -mtime +14 -delete 2>/dev/null || true
+        echo "$(date -u +%FT%TZ) backup ok size=$(stat -c%s "${sql}.gz" 2>/dev/null || echo 0)B file=${sql}.gz" >> /opt/traccar/data/backup/backup.log
+        BSCRIPT
+        chmod +x /opt/traccar/data/run_backup.sh
+        (
+          sleep 180
+          while true; do
+            now=$(date -u +%s)
+            target=$(date -u -d 'today 02:00' +%s 2>/dev/null || echo 0)
+            if [ "$target" -le "$now" ]; then target=$((target + 86400)); fi
+            sleep_s=$((target - now))
+            sleep "$sleep_s"
+            /opt/traccar/data/run_backup.sh >> /opt/traccar/data/backup/backup.log 2>&1 || echo "$(date -u +%FT%TZ) backup FAILED" >> /opt/traccar/data/backup/backup.log
+            sleep 60
+          done
+        ) &
+        exec /opt/traccar/jre/bin/java -jar tracker-server.jar conf/traccar.xml
     restart: unless-stopped
-
-  traccar-transformer:
-    build:
-      context: ./services/traccar-transformer/src
-      dockerfile: Dockerfile
-    depends_on:
-      gps-adapter:
-        condition: service_started
-    environment:
-      PORT: "8080"
-      ADAPTER_URL: "http://gps-adapter:8080/gps/position"
-      FORWARD_INVALID: "false"
-    restart: unless-stopped
-
-  gps-adapter:
-    build:
-      context: ./services/gps-adapter/src
-      dockerfile: Dockerfile
-    depends_on:
-      manager:
-        condition: service_started
-      traccar:
-        condition: service_started
-      keycloak:
-        condition: service_started
-    environment:
-      OPENREMOTE_URL: ${OPENREMOTE_URL}
-      OPENREMOTE_REALM: ${OPENREMOTE_REALM}
-      OPENREMOTE_CLIENT_ID: ${OPENREMOTE_CLIENT_ID}
-      FLEET_PARENT_ID: ${FLEET_PARENT_ID:-}
-      FORWARD_INVALID: ${FORWARD_INVALID:-false}
-      OPENREMOTE_USER: ${OPENREMOTE_USER}
-      OPENREMOTE_PASSWORD: ${OPENREMOTE_PASSWORD}
-      KEYCLOAK_URL: ${KEYCLOAK_URL}
-      TRACCAR_URL: ${TRACCAR_URL}
-      TRACCAR_USER: ${TRACCAR_USER}
-      TRACCAR_PASSWORD: ${TRACCAR_PASSWORD}
-      ADAPTER_SECRET_KEY: ${ADAPTER_SECRET_KEY}
-      PORT: "8080"
-    healthcheck:
-      test: ["CMD", "wget", "-qO-", "http://localhost:8080/health"]
-      interval: 30s
-      timeout: 5s
-      retries: 3
-    restart: unless-stopped
-
-  openremote-nginx:
-    image: insiderfyr/openremote-nginx:latest
-    depends_on:
-      manager:
-        condition: service_started
-      keycloak:
-        condition: service_started
-      gps-adapter:
-        condition: service_started
-    environment:
-      TZ: ${TZ}
-      OR_HOSTNAME: ${OR_HOSTNAME}
-      OR_MANAGER_URL: ${OR_MANAGER_URL}
-      OR_GPS_ADAPTER_URL: ${OR_GPS_ADAPTER_URL}
-      OR_TRACCAR_URL: ${OR_TRACCAR_URL}
-      ADAPTER_SECRET_KEY: ${ADAPTER_SECRET_KEY}
-    ports:
-      - "8443:8080"
-    restart: unless-stopped
-
-  backup:
-    build:
-      context: ./services/backup
-      dockerfile: Dockerfile
-    depends_on:
-      timescaledb:
-        condition: service_healthy
-    environment:
-      POSTGRES_HOST: timescaledb
-      POSTGRES_DB: ${POSTGRES_DB}
-      POSTGRES_USER: ${POSTGRES_USER}
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
-      BACKUP_DIR: ${BACKUP_DIR}
-    volumes:
-      - backup-data:/backups
-    # On Railway this runs on cron "0 2 * * *".
-    # Locally, run on demand: docker compose run --rm backup
-    profiles: ["backup"]
 
 volumes:
-  timescale-data:
-  manager-deployment:
-  manager-storage:
   traccar-data:
-  backup-data:

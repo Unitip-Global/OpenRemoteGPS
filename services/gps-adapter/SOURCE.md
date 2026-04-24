@@ -1,34 +1,74 @@
-# GPS-Adapter — source code
+# gps-adapter — source
 
-The Go source for this service is **not** in this repo (this repo captures deployment config only).
+Go service that bridges Traccar positions into OpenRemote `TrackerAsset`
+instances in the `unitip` realm.
 
-## Where it lives today
+## Where the source lives
 
-Unknown at the time this snapshot was taken. On Railway the service builds from a `Dockerfile` with the `DOCKERFILE` builder (nixpacks detected `go`), so the source is in whatever repo Railway is pulling from.
-
-**TODO (denis):** fill this in with the actual GitHub repo URL and branch, e.g.:
+**In this repo**, at [`./src/`](./src). Deployed via
+`railway up services/gps-adapter/src --path-as-root` after linking the
+GPS-Adapter service.
 
 ```
-Repo:   github.com/<org>/<repo>
-Branch: main
-Path:   /   (or subpath if monorepo)
+services/gps-adapter/
+├── SOURCE.md         # this file
+├── vars.env          # env var reference
+└── src/
+    ├── main.go       # ~350 lines, stdlib only
+    ├── go.mod
+    ├── Dockerfile    # multi-stage golang:1.22-alpine → alpine:3.19
+    └── railway.toml  # DOCKERFILE builder, /health healthcheck
 ```
-
-## Deployment signature (from last successful Railway build)
-
-- Build: `DOCKERFILE`, path `Dockerfile`
-- Nixpacks providers: `go`
-- Deploy: healthcheck `/health` (30s timeout), 1 replica, `ON_FAILURE` restart x10
-- Last SUCCESS deploy: `5d8ad8a6-9fc1-4f17-a119-e5960c8660a0` at 2026-03-30T13:20:20Z
-- Digest: `sha256:cb66124eefa48a5ffcef2761b3e3e3cc57ca3987efc9f05c383a865064d7c7a6`
 
 ## Role
 
-HTTP bridge service (`:8080`) between Traccar (GPS device ingest) and OpenRemote (asset model):
+Accepts position pushes at `POST /gps/position` in **either** shape the
+Traccar side might send:
 
-- Authenticates against OpenRemote via Keycloak OAuth2
-- Authenticates against Traccar with basic auth
-- Translates Traccar device positions into OpenRemote asset location updates
-- Exposes `/health` for Railway healthcheck
+- **Flat** (what the legacy mystery binary accepted):
+  `{ "deviceId": 257, "latitude": ..., "longitude": ..., "speed": ...,
+     "valid": true, "batteryLevel": 95 }`
 
-Shares `ADAPTER_SECRET_KEY` with the `openremote-nginx` edge service for authenticated webhook / push calls.
+- **Traccar nested** (what Traccar's built-in `forward.type=json` emits):
+  `{ "device": { ... }, "position": { ... }, "event": { ... } }`
+
+For every valid position:
+
+1. Looks up the Traccar device name in an in-process cache (queries
+   `GET /api/devices/{id}` on miss).
+2. Finds the matching OpenRemote asset via cached `traccarDeviceId`, or
+   queries `POST /api/{realm}/asset/query` on miss.
+3. Creates a new `TrackerAsset` under `FLEET_PARENT_ID` if no asset
+   exists, or updates the existing asset's attributes in place.
+
+Attributes pushed to OpenRemote on each update (when available in the
+payload): `location`, `altitude`, `speed`, `heading`, `protocol`,
+`batteryLevel`, `fuelLevel`, `odometer`, `ignition`. Missing values are
+skipped — no zero-writes polluting charts.
+
+OAuth2 password grant against Keycloak (realm admin), one bearer token
+cached in-process and refreshed ~10s before expiry.
+
+## Why this replaced the previous binary
+
+The original `gps-adapter` was deployed from an unknown external source
+and only accepted the flat shape. That forced a separate
+`traccar-transformer` service purely to reshape Traccar's nested JSON to
+flat before POSTing to the adapter. By accepting both shapes directly,
+the transformer becomes optional — keep it in front if you want a
+single knob for payload filtering, or drop it and have Traccar forward
+straight to `http://gps-adapter.railway.internal:8080/gps/position`.
+
+## Deployment signature
+
+- Build: `DOCKERFILE`, path `Dockerfile` (in `src/`)
+- Deploy: healthcheck `/health` (30s timeout), 1 replica, `ON_FAILURE` restart x10
+- Runtime: ~8 MB Go binary on Alpine 3.19, ~20 MB RAM idle
+
+## Things to verify
+
+- `FLEET_PARENT_ID` env var on the GPS-Adapter Railway service matches
+  the id of the `Fleet Unitip Global` GroupAsset (currently
+  `49P7wc3KE2ZPfk7JsZGvT9`). Newly-created assets are parented to it.
+- After a Traccar position forward, log line:
+  `[OK] device=257 asset=... lat=... lon=... speed=...km/h`

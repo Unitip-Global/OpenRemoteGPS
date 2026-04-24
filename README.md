@@ -44,6 +44,7 @@ OpenRemoteSetup/
 └── docs/
     ├── TOPOLOGY.md           # data flow, ports, network, fleet platform layout
     ├── VARIABLES.md          # full variable reference
+    ├── DASHBOARD_GUIDE.md    # step-by-step UI polish: dashboards, roles, map, icons
     └── SECRETS.md            # what to rotate, where they live
 ```
 

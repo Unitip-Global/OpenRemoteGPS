@@ -1,3 +1,11 @@
+// traccar-transformer — passthrough proxy in front of gps-adapter.
+//
+// Traccar's built-in forwarder posts a nested JSON payload
+// ({device:{...}, position:{...}}) to this service. We parse only enough
+// to enforce the FORWARD_INVALID filter and to log per-message activity,
+// then forward the original request body unchanged so every attribute
+// (bleTemp1, power, ignition, ioXX, etc.) reaches gps-adapter, which now
+// accepts the nested shape natively.
 package main
 
 import (
@@ -7,7 +15,6 @@ import (
 	"log"
 	"net/http"
 	"os"
-	"strconv"
 	"time"
 )
 
@@ -20,12 +27,8 @@ type traccarDevice struct {
 type traccarPosition struct {
 	ID         int64                  `json:"id"`
 	DeviceID   int64                  `json:"deviceId"`
-	Protocol   string                 `json:"protocol"`
 	Latitude   float64                `json:"latitude"`
 	Longitude  float64                `json:"longitude"`
-	Altitude   float64                `json:"altitude"`
-	Speed      float64                `json:"speed"`
-	Course     float64                `json:"course"`
 	Valid      bool                   `json:"valid"`
 	Attributes map[string]interface{} `json:"attributes"`
 }
@@ -33,19 +36,6 @@ type traccarPosition struct {
 type traccarPayload struct {
 	Device   traccarDevice   `json:"device"`
 	Position traccarPosition `json:"position"`
-}
-
-type flatPayload struct {
-	DeviceID     int64   `json:"deviceId"`
-	UniqueID     string  `json:"uniqueId"`
-	Latitude     float64 `json:"latitude"`
-	Longitude    float64 `json:"longitude"`
-	Altitude     float64 `json:"altitude"`
-	Speed        float64 `json:"speed"`
-	Course       float64 `json:"course"`
-	Valid        bool    `json:"valid"`
-	Protocol     string  `json:"protocol"`
-	BatteryLevel int     `json:"batteryLevel"`
 }
 
 var (
@@ -59,22 +49,6 @@ func getenv(k, def string) string {
 		return v
 	}
 	return def
-}
-
-func batteryFromAttrs(a map[string]interface{}) int {
-	v, ok := a["batteryLevel"]
-	if !ok {
-		return 0
-	}
-	switch x := v.(type) {
-	case float64:
-		return int(x)
-	case string:
-		if n, err := strconv.Atoi(x); err == nil {
-			return n
-		}
-	}
-	return 0
 }
 
 func handleWebhook(w http.ResponseWriter, r *http.Request) {
@@ -96,42 +70,34 @@ func handleWebhook(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if p.Device.ID == 0 || p.Position.DeviceID == 0 {
+	deviceID := p.Position.DeviceID
+	if deviceID == 0 {
+		deviceID = p.Device.ID
+	}
+	if deviceID == 0 {
 		log.Printf("skip: missing device id (device=%+v position.deviceId=%d)", p.Device, p.Position.DeviceID)
 		w.WriteHeader(http.StatusNoContent)
 		return
 	}
 
 	if !forwardInvalid && !p.Position.Valid {
+		log.Printf("drop invalid deviceId=%d name=%q lat=%.5f lon=%.5f attrs=%d (set FORWARD_INVALID=true to forward)",
+			deviceID, p.Device.Name, p.Position.Latitude, p.Position.Longitude, len(p.Position.Attributes))
 		w.WriteHeader(http.StatusNoContent)
 		return
 	}
 
-	flat := flatPayload{
-		DeviceID:     p.Position.DeviceID,
-		UniqueID:     p.Device.UniqueID,
-		Latitude:     p.Position.Latitude,
-		Longitude:    p.Position.Longitude,
-		Altitude:     p.Position.Altitude,
-		Speed:        p.Position.Speed,
-		Course:       p.Position.Course,
-		Valid:        p.Position.Valid,
-		Protocol:     p.Position.Protocol,
-		BatteryLevel: batteryFromAttrs(p.Position.Attributes),
-	}
-
-	b, _ := json.Marshal(flat)
-	resp, err := client.Post(adapterURL, "application/json", bytes.NewReader(b))
+	resp, err := client.Post(adapterURL, "application/json", bytes.NewReader(body))
 	if err != nil {
-		log.Printf("adapter POST failed: deviceId=%d err=%v", flat.DeviceID, err)
+		log.Printf("adapter POST failed: deviceId=%d err=%v", deviceID, err)
 		http.Error(w, "adapter unreachable", http.StatusBadGateway)
 		return
 	}
 	io.Copy(io.Discard, resp.Body)
 	resp.Body.Close()
 
-	log.Printf("fwd deviceId=%d name=%q lat=%.5f lon=%.5f valid=%t adapter=%d",
-		flat.DeviceID, p.Device.Name, flat.Latitude, flat.Longitude, flat.Valid, resp.StatusCode)
+	log.Printf("fwd deviceId=%d name=%q lat=%.5f lon=%.5f valid=%t attrs=%d adapter=%d",
+		deviceID, p.Device.Name, p.Position.Latitude, p.Position.Longitude, p.Position.Valid, len(p.Position.Attributes), resp.StatusCode)
 
 	w.WriteHeader(http.StatusNoContent)
 }

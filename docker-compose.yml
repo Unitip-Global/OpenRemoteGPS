@@ -118,7 +118,7 @@ services:
 
   gps-adapter:
     build:
-      context: ./services/gps-adapter
+      context: ./services/gps-adapter/src
       dockerfile: Dockerfile
     depends_on:
       manager:
@@ -128,10 +128,11 @@ services:
       keycloak:
         condition: service_started
     environment:
-      GIN_MODE: ${GIN_MODE}
       OPENREMOTE_URL: ${OPENREMOTE_URL}
       OPENREMOTE_REALM: ${OPENREMOTE_REALM}
       OPENREMOTE_CLIENT_ID: ${OPENREMOTE_CLIENT_ID}
+      FLEET_PARENT_ID: ${FLEET_PARENT_ID:-}
+      FORWARD_INVALID: ${FORWARD_INVALID:-false}
       OPENREMOTE_USER: ${OPENREMOTE_USER}
       OPENREMOTE_PASSWORD: ${OPENREMOTE_PASSWORD}
       KEYCLOAK_URL: ${KEYCLOAK_URL}

@@ -27,7 +27,7 @@ Railway auto-injects its own `RAILWAY_*` variables (service ID, env name, privat
 | `OR_ADMIN_PASSWORD` | `__CHANGE_ME__` | Manager admin |
 | `OR_DEV_MODE` | `false` | Prod |
 | `OR_SETUP_TYPE` | `production` | |
-| `OR_SETUP_RUN_ON_RESTART` | `true` | ⚠ Flip to `false` once stable — see [SECRETS.md](SECRETS.md) for rationale |
+| `OR_SETUP_RUN_ON_RESTART` | `false` | Flipped from `true` on 2026-04-24 after realm `unitip` + fleet platform was set up. Leaving it `true` re-seeds demo data at every restart, overwriting custom config. |
 | `OR_MAP_SETTINGS_PATH` | `/deployment/map/mapsettings.json` | Baked into nginx image |
 | `OR_MAP_TILES_PATH` | `/opt/map/mapdata.mbtiles` | Baked into nginx image |
 | `OR_LOGGING_CONFIG_FILE` | `/opt/map/logging.properties` | |

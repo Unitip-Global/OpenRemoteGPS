@@ -115,6 +115,49 @@ Browser URL per realm:
 - Master admin: `https://gps.unitip.global/manager/` (default, or `?realm=master`)
 - Unitip: `https://gps.unitip.global/manager/?realm=unitip`
 
+## Fleet platform layout (inside the `unitip` realm)
+
+```
+Fleet Unitip Global (GroupAsset)
+├── B 154 UIP (TrackerAsset)              ← traccarDeviceId=257 (the live Teltonika)
+├── 01 Autobetoniera Fiori BF99H          ← traccarDeviceId=8
+├── 02 Autogreder Volvo G 946B B 11954    ← traccarDeviceId=10
+├── ... 254 more vehicles ...             ← 1:1 mirror of devices in Traccar
+└── (any new device added in Traccar)     ← adapter creates the asset on first position push
+```
+
+Seeding + rules come from [`scripts/openremote_platform_setup.py`](../scripts/openremote_platform_setup.py)
+(idempotent; safe to re-run after adding devices in Traccar).
+
+### Baseline realm rulesets
+
+Ten JSON rulesets are pre-seeded, all **disabled** by default (enable from the Rules UI once thresholds
+fit your fleet):
+
+| # | Rule | Trigger |
+|---|---|---|
+| 01 | Supraviteza critica >130kmh | `speed > 130` |
+| 02 | Supraviteza >90kmh | `speed > 90` (DN limit) |
+| 03 | Viteza urbana >50kmh | `speed > 50` (urban limit) |
+| 04 | Baterie critica <10% | `batteryLevel < 10` |
+| 05 | Baterie scazuta <20% | `batteryLevel < 20` |
+| 06 | Combustibil scazut <15% | `fuelLevel < 15` |
+| 07 | Altitudine extrema >2500m | `altitude > 2500` |
+| 08 | Contact pornit | `ignition == true` |
+| 09 | Contact oprit | `ignition == false` |
+| 10 | Raport saptamanal kilometraj | cron `0 0 8 ? * MON` |
+
+Each rule writes a status note to the matching asset's `notes` attribute. Swap to push
+notifications / webhooks / alarms from the Rules UI when you wire up notification channels.
+
+### Ongoing mirror (Traccar → OpenRemote)
+
+- `traccar-transformer` + `gps-adapter` keep every TrackerAsset's `location`, `speed`,
+  `altitude`, `batteryLevel`, etc. live from Traccar positions.
+- `gps-adapter` currently does **not** parent newly-created assets to Fleet automatically
+  (it creates them at realm root). After a new device shows up in Traccar and the adapter
+  creates its asset, re-run `scripts/openremote_platform_setup.py` to move it under Fleet.
+
 ## Shared database
 
 A single `timescaledb` instance hosts the `openremote` database, used by **manager** and **keycloak** (its own schemas). All connect as user `openremote`. Convenient but one compromised credential gives access to both — worth splitting later.

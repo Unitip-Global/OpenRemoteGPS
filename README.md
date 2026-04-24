@@ -38,8 +38,11 @@ OpenRemoteSetup/
 │   ├── traccar-transformer/  # vars.env + SOURCE.md + src/ (Go source in repo)
 │   ├── gps-adapter/          # vars.env + SOURCE.md (Go source external)
 │   └── backup/               # vars.env + SOURCE.md
+├── scripts/
+│   ├── README.md                        # how to run the setup scripts
+│   └── openremote_platform_setup.py     # idempotent: Fleet + TrackerAssets + rules
 └── docs/
-    ├── TOPOLOGY.md           # data flow, ports, network
+    ├── TOPOLOGY.md           # data flow, ports, network, fleet platform layout
     ├── VARIABLES.md          # full variable reference
     └── SECRETS.md            # what to rotate, where they live
 ```

@@ -22,7 +22,7 @@ The same Postgres user/password (`openremote` / `o_parola_puternica`) is used by
 
 | Var | Current | Recommendation |
 |---|---|---|
-| `OR_SETUP_RUN_ON_RESTART` | `true` | Flip to `false` once the OpenRemote realm/rules are stable. `true` re-runs setup on every container restart and can re-seed demo data. |
+| `OR_SETUP_RUN_ON_RESTART` | `false` ✓ (flipped 2026-04-24) | Flipped on 2026-04-24 after the fleet platform was seeded. Keeping it `false` prevents OpenRemote from re-running its built-in setup and overwriting the `unitip` realm's assets/rules. |
 | `OR_KEYCLOAK_SECURE` | `false` | OK — TLS is terminated at the Railway edge; internal traffic is plaintext over the private network. Do not expose Keycloak directly. |
 | `OR_SSL_PORT` | `-1` | OK — same reason. |
 

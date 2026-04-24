@@ -75,6 +75,16 @@ Same `OR_*` block as nginx except no `OR_MANAGER_URL/OR_GPS_ADAPTER_URL/OR_TRACC
 | `GPS_PORT` | `5055` (device TCP ingest) |
 | `TRACCAR_DB_USER` / `TRACCAR_DB_PASSWORD` | shared Postgres creds |
 
+## traccar-transformer
+
+Shim service that reshapes Traccar's native `forward.type=json` (nested `{device, position, event}`) into the flat JSON the `gps-adapter` binary parses. Source in this repo at [`services/traccar-transformer/src/`](../services/traccar-transformer/src).
+
+| Variable | Example | Notes |
+|---|---|---|
+| `PORT` | `8080` | Listen port |
+| `ADAPTER_URL` | `http://gps-adapter.railway.internal:8080/gps/position` | Where the flat payload is POSTed |
+| `FORWARD_INVALID` | `false` | If `true`, forward positions with `valid=false` (device has no GPS fix). Default `false` to avoid freezing assets on stale last-known coords. |
+
 ## gps-adapter
 
 | Variable | Example |
@@ -82,9 +92,9 @@ Same `OR_*` block as nginx except no `OR_MANAGER_URL/OR_GPS_ADAPTER_URL/OR_TRACC
 | `PORT` | `8080` |
 | `GIN_MODE` | `release` (Go/Gin production mode) |
 | `OPENREMOTE_URL` | `http://manager.railway.internal:8080` |
-| `OPENREMOTE_REALM` | `master` |
+| `OPENREMOTE_REALM` | `unitip` (was `master` before realm split — see [TOPOLOGY.md](TOPOLOGY.md#realms)) |
 | `OPENREMOTE_CLIENT_ID` | `openremote` |
-| `OPENREMOTE_USER` / `OPENREMOTE_PASSWORD` | `admin` / `__CHANGE_ME__` |
+| `OPENREMOTE_USER` / `OPENREMOTE_PASSWORD` | `admin` / `__CHANGE_ME__` (unitip-realm admin password, rotate — see [SECRETS.md](SECRETS.md)) |
 | `KEYCLOAK_URL` | `http://keycloak.railway.internal:8080` |
 | `TRACCAR_URL` | `http://traccar.railway.internal:8082` |
 | `TRACCAR_USER` / `TRACCAR_PASSWORD` | `admin@unitip.ro` / `__CHANGE_ME__` |

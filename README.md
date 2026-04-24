@@ -13,9 +13,10 @@ Public entry point: **https://gps.unitip.global**
 | `openremote-nginx` | Dockerfile at repo root (`nginx:alpine` + `nginx.conf`) | Edge for `gps.unitip.global`; TLS terminated at Railway edge | ✅ |
 | `manager` | `openremote/manager:latest` | OpenRemote core — assets, rules, MQTT | internal |
 | `keycloak` | `openremote/keycloak:23.0.7.6` | Identity provider (OAuth2 / OIDC) | internal |
-| `traccar` | Traccar server | GPS device ingest (TCP `:5055`, HTTP `:8082`) | TCP proxy |
-| `timescaledb` | TimescaleDB (Postgres) | Database for OpenRemote + Keycloak + Traccar | internal |
-| `gps-adapter` | Go · Dockerfile | Bridge: Traccar ↔ OpenRemote asset model | internal |
+| `traccar` | Traccar server | GPS device ingest (TCP `:5027` Teltonika, HTTP `:8082`) | TCP proxy |
+| `timescaledb` | TimescaleDB (Postgres) | Database for OpenRemote + Keycloak | internal |
+| `traccar-transformer` | Go · Dockerfile (repo `services/traccar-transformer/src/`) | Reshapes Traccar's nested JSON forward payload → flat payload that `gps-adapter` parses | internal |
+| `gps-adapter` | Go · Dockerfile (external) | Creates/updates OpenRemote `TrackerAsset` in realm `unitip` from positions pushed by `traccar-transformer` | internal |
 | `backup` | Dockerfile cron `0 2 * * *` | Nightly `pg_dump` of `openremote` DB to volume | cron only |
 
 ## Layout
@@ -31,10 +32,11 @@ OpenRemoteSetup/
 ├── services/
 │   ├── openremote-nginx/     # vars.env only (env var reference)
 │   ├── manager/              # vars.env
-│   ├── keycloak/             # vars.env
+│   ├── keycloak/              # vars.env
 │   ├── traccar/              # vars.env
 │   ├── timescaledb/          # vars.env
-│   ├── gps-adapter/          # vars.env + SOURCE.md (where the Go code lives)
+│   ├── traccar-transformer/  # vars.env + SOURCE.md + src/ (Go source in repo)
+│   ├── gps-adapter/          # vars.env + SOURCE.md (Go source external)
 │   └── backup/               # vars.env + SOURCE.md
 └── docs/
     ├── TOPOLOGY.md           # data flow, ports, network
@@ -65,6 +67,7 @@ docker compose up -d
 Services built from a `Dockerfile` rather than a public image:
 
 - `openremote-nginx` — built from the root `Dockerfile` + `nginx.conf` in this repo; deployed via `railway up`.
+- `traccar-transformer` — Go source in this repo at `services/traccar-transformer/src/`; deployed via `railway up services/traccar-transformer/src` (linked to that service).
 - `gps-adapter` — Go service; source lives elsewhere (see `services/gps-adapter/SOURCE.md`).
 - `backup` — cron + `pg_dump`; source lives elsewhere (see `services/backup/SOURCE.md`).
 

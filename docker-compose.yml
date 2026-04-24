@@ -103,6 +103,19 @@ services:
       - "5055:5055"           # OsmAnd / device TCP ingest
     restart: unless-stopped
 
+  traccar-transformer:
+    build:
+      context: ./services/traccar-transformer/src
+      dockerfile: Dockerfile
+    depends_on:
+      gps-adapter:
+        condition: service_started
+    environment:
+      PORT: "8080"
+      ADAPTER_URL: "http://gps-adapter:8080/gps/position"
+      FORWARD_INVALID: "false"
+    restart: unless-stopped
+
   gps-adapter:
     build:
       context: ./services/gps-adapter

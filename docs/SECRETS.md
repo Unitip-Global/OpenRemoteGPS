@@ -4,11 +4,12 @@ All secrets currently deployed in the Railway `OpenRemoteGPS` env are **weak and
 
 ## Secrets that must be rotated
 
-| Railway var | Current value (as of 2026-04-23) | Severity | Used by | Rotation action |
+| Railway var | Current value (as of 2026-04-24) | Severity | Used by | Rotation action |
 |---|---|---|---|---|
 | `POSTGRES_PASSWORD` / `OR_DB_PASSWORD` / `KC_DB_PASSWORD` / `TRACCAR_DB_PASSWORD` | `o_parola_puternica` (literal "a strong password" — a placeholder, not one) | **Critical** | timescaledb, manager, keycloak, traccar, backup | 1) rotate in `timescaledb` service vars; 2) update in all four consumers; 3) restart manager + keycloak + traccar + backup |
-| `OR_ADMIN_PASSWORD` | `secret` | **Critical** | manager, nginx | Rotate; update any admin tooling that logs in as OpenRemote admin |
-| `OPENREMOTE_PASSWORD` | `secret` | **Critical** | gps-adapter | Must match OpenRemote admin creds above |
+| `OR_ADMIN_PASSWORD` (master realm) | `secret` | **Critical** | manager, nginx | Master realm superadmin. Rotate; update any admin tooling that logs in as OpenRemote master admin |
+| unitip realm admin password | `__CHANGE_ME__` (24-char random generated 2026-04-24, stored in Railway `OPENREMOTE_PASSWORD` on GPS-Adapter service) | **Critical** | gps-adapter | Used by adapter to authenticate against Keycloak realm `unitip`. Rotate together with the Keycloak user in `unitip` realm |
+| `OPENREMOTE_PASSWORD` (gps-adapter) | mirrors unitip realm admin password | **Critical** | gps-adapter | Must match the Keycloak user's password in realm `unitip` |
 | `KEYCLOAK_ADMIN_PASSWORD` | `Admin` | **Critical** | keycloak | Rotate |
 | `TRACCAR_PASSWORD` / `ADMIN_PASSWORD` (traccar) | `Unitip123!` | High | traccar, gps-adapter | Rotate; update adapter var |
 | `ADAPTER_SECRET_KEY` | `6061d01001b71ed152ad24b6ff76af5e54ff0ba7fc2ef686f63e704326af4dfc` | Medium | nginx, gps-adapter | Already 32-byte hex — not weak, but shared. Rotate on suspicion only |

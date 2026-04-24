@@ -159,6 +159,100 @@ a dashboard-ului cu widget Map → vezi România. Dacă nu, hard-refresh
 
 ---
 
+## Senzori IoT adiționali conectați la Teltonika (BLE, 1-Wire, analog, CAN)
+
+Dacă ai conectat la device senzori suplimentari (temperatură în remorcă, senzor
+ușă, senzor debit, iButton șofer, CAN bus de camion, etc.), fluxul e în trei
+pași.
+
+### Pas 1 — activezi parametrul în Teltonika Configurator (pe device)
+
+Conectezi device-ul prin USB la Configurator → tab **I/O** → caută AVL ID-ul
+senzorului → **Enabled: On**, **Priority: Low** (sau High dacă vrei event
+imediat). Save → Ctrl+S ca să scrii config pe device.
+
+Fără acest pas, chiar dacă senzorul e conectat fizic, device-ul nu-l
+transmite prin GPRS.
+
+**Cele mai folosite AVL ID-uri pentru IoT adițional:**
+
+| Senzor | AVL ID | Unitate / format |
+|---|---|---|
+| BLE temperature tag 1-4 (eg. Elsys ERS) | io25, io26, io27, io28 | °C × 10 |
+| 1-Wire Dallas temperature 1-4 | io72, io73, io74, io75 | °C × 10 |
+| Digital input DIN1 (door open, panic) | io1 | 0/1 |
+| Digital input DIN2, DIN3 (PTO, siguranță) | io2, io3 | 0/1 |
+| Analog input AIN1 (senzor fuel RS485 / nivel rezervor) | io9 | mV |
+| Analog input AIN2 | io10 | mV |
+| External supply voltage (tensiune baterie vehicul) | io66 | mV |
+| Internal battery voltage (backup battery intern) | io67 | mV |
+| GSM signal (calitate semnal) | io21 | 0-5 |
+| Movement (accelerometru) | io240 | 0/1 |
+| Ignition (detect pe DIN1 sau tensiune external) | io239 | 0/1 |
+| Odometer total | io199 | metri |
+| iButton driver ID | io78 | număr 64-bit |
+| Driver 1 name (tacograf) | io403 | text |
+| Sleep mode | io200 | 0-3 |
+| CAN OBD: RPM / coolant / engine load / etc. | io81-io115 | variabile |
+
+Listă completă pe
+[wiki.teltonika-gps.com/view/FMB_AVL_ID_List](https://wiki.teltonika-gps.com/view/FMB_AVL_ID_List).
+
+### Pas 2 — verifici în Traccar UI că ajunge
+
+După un ciclu normal de update (1-2 min cu cer liber sau cu device trezit din
+sleep), în Traccar:
+
+1. Click pe device → dreapta jos se deschide panel-ul cu ultimele poziții.
+2. Secțiunea **Attributes** arată toate parametrii pe care device-ul i-a
+   trimis. Căutăm numele din tabel de mai sus (ex. `io25` pentru BLE
+   temperature sau direct `ignition`, `motion`, `batteryLevel` dacă Traccar
+   i-a tradus deja).
+
+Dacă parametrul NU apare în Traccar, Configurator-ul n-a fost salvat corect
+sau device-ul nu l-a transmis încă (prioritate Low = trimis doar la sleep-out
+sau motion).
+
+### Pas 3 — unde îl vezi în OpenRemote
+
+Adapter-ul (`services/gps-adapter/src/main.go`) mapează automat parametrii
+frecvenți la atribute numite pe `TrackerAsset`. Sunt deja pre-definite slot-urile:
+
+- `batteryLevel`, `batteryVoltage`, `externalVoltage`, `power`, `ignition`,
+  `movement`, `fuelLevel`, `odometer`, `gsmSignal`, `sleepMode`, `driverID`
+- `din1`, `din2`, `din3`
+- `bleTemperature1-4`, `dallasTemperature1-4`
+
+**Orice alt parametru** pe care Traccar îl primește ajunge automat în atributul
+catch-all `rawAttributes` (tip JSON) de pe asset. Exemplu — dacă device-ul
+trimite `io88` (some custom CAN value), nu apare ca atribut nume-it, dar îl
+vezi în `rawAttributes` ca `{"io88": 42}`.
+
+### Ce faci în UI cu un atribut nou nume-it
+
+Apare singur pe asset. Pentru a-l vedea în dashboard:
+1. În widget-ul **Asset list** → **+ Add column** → alegi atributul.
+2. Pentru alarme → **Rules** → creează regula pe `<NumeAtribut> OPERATOR valoare`.
+3. Pentru chart istoric → **Insights** → widget **Chart line** → alegi atributul.
+
+### Ce faci în UI cu `rawAttributes` (JSON blob)
+
+Două abordări:
+
+**A.** Afișare ca atare în dashboard — widget **Asset attribute** tip JSON,
+user-ul vede structura brută, copy-paste pentru debugging.
+
+**B.** Promovezi un sub-atribut la nivel de atribut nume-it:
+1. Asset → + Add attribute → Name: `can_rpm`, Type: number.
+2. **Agent Link** pe noul atribut → alege "HTTP Agent self" (sau mai simplu —
+   rezolvă cu un rule JSON care citește `rawAttributes.io85` și scrie în
+   `can_rpm`).
+
+Dacă ai mulți senzori noi pe care vrei să-i promovezi la atribute named, spune-mi
+ce AVL IDs folosesc și adaug mapare directă în adapter (fișier
+[services/gps-adapter/src/main.go](../services/gps-adapter/src/main.go) —
+funcția `pullCommonAttrs`).
+
 ## Ce ramâne de făcut dacă vrei feature-uri fleet-specific
 
 OpenRemote core (ce rulăm noi) e IoT generic. Dacă vrei:

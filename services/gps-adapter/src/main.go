@@ -214,19 +214,52 @@ var assetCache sync.Map // map[int64]string
 var attrsReady sync.Map // map[string]bool
 
 var baselineAttrTypes = map[string]string{
-	"altitude":        "number",
-	"speed":           "number",
-	"heading":         "number",
-	"protocol":        "text",
-	"batteryLevel":    "positiveInteger",
-	"fuelLevel":       "number",
-	"ignition":        "boolean",
-	"odometer":        "number",
-	"power":           "number",
+	// GPS core (always present)
+	"altitude": "number",
+	"speed":    "number",
+	"heading":  "number",
+	"protocol": "text",
+
+	// Battery / power / ignition
+	"batteryLevel":     "positiveInteger", // percent
+	"batteryVoltage":   "number",          // mV, Teltonika io67
+	"externalVoltage":  "number",          // mV, Teltonika io66
+	"power":            "number",
+	"ignition":         "boolean",
+	"movement":         "boolean", // Teltonika io240
+	"sleepMode":        "positiveInteger", // Teltonika io200
+
+	// Fuel + odometer
+	"fuelLevel": "number",
+	"odometer":  "number",
+
+	// Network / fleet telemetry
+	"gsmSignal": "positiveInteger", // 0-5, Teltonika io21
+
+	// Driver ID (iButton / RFID)
+	"driverID": "text", // Teltonika io78 (iButton) or io403 (driver 1 name)
+
+	// BLE beacon temperatures (reefer / cold-chain)
 	"bleTemperature1": "number",
 	"bleTemperature2": "number",
 	"bleTemperature3": "number",
 	"bleTemperature4": "number",
+
+	// 1-Wire Dallas temperature probes
+	"dallasTemperature1": "number",
+	"dallasTemperature2": "number",
+	"dallasTemperature3": "number",
+	"dallasTemperature4": "number",
+
+	// Digital inputs (DIN1-DIN3: door, panic, PTO, etc.)
+	"din1": "boolean",
+	"din2": "boolean",
+	"din3": "boolean",
+
+	// Catch-all: every Traccar `position.attributes` key that isn't mapped above
+	// lands here as a JSON object, so no custom sensor ever disappears. Read
+	// from this in rules/dashboards with JSONPath-style attribute expressions.
+	"rawAttributes": "JSON",
 }
 
 func orURL(p string) string {
@@ -461,20 +494,37 @@ type nestedIncoming struct {
 // common struct the rest of the handler uses. Missing batteryLevel/fuel/etc.
 // stays as nil so updateAttributes skips them instead of writing zeros.
 type normalized struct {
-	deviceID    int64
-	uniqueID    string
-	name        string
-	lat, lon    float64
-	altitude    float64
-	speed       float64
-	course      float64
-	valid       bool
-	protocol    string
-	battery     *int
-	fuel        *float64
-	odometer    *float64
-	ignition    *bool
-	extraAttrs  map[string]interface{}
+	deviceID int64
+	uniqueID string
+	name     string
+	lat, lon float64
+	altitude float64
+	speed    float64
+	course   float64
+	valid    bool
+	protocol string
+
+	// Named IoT attributes extracted from Traccar's `position.attributes`
+	// or common-key map. All pointers: nil means "not present in this
+	// payload" so updateAttributes skips them.
+	battery         *int
+	batteryVoltage  *float64
+	externalVoltage *float64
+	power           *float64
+	gsmSignal       *int
+	ignition        *bool
+	movement        *bool
+	sleepMode       *int
+	fuel            *float64
+	odometer        *float64
+	driverID        *string
+	din1, din2, din3 *bool
+	bleTemp          [4]*float64
+	dallasTemp       [4]*float64
+
+	// Every Traccar attribute that wasn't mapped above. Written verbatim to
+	// `rawAttributes` so no custom sensor goes missing on the dashboard side.
+	extras map[string]interface{}
 }
 
 func parsePayload(body []byte) (*normalized, error) {
@@ -482,17 +532,16 @@ func parsePayload(body []byte) (*normalized, error) {
 	var n nestedIncoming
 	if err := json.Unmarshal(body, &n); err == nil && n.Device != nil && n.Position != nil {
 		out := &normalized{
-			deviceID:   n.Device.ID,
-			uniqueID:   n.Device.UniqueID,
-			name:       n.Device.Name,
-			lat:        n.Position.Latitude,
-			lon:        n.Position.Longitude,
-			altitude:   n.Position.Altitude,
-			speed:      n.Position.Speed,
-			course:     n.Position.Course,
-			valid:      n.Position.Valid,
-			protocol:   n.Position.Protocol,
-			extraAttrs: n.Position.Attributes,
+			deviceID: n.Device.ID,
+			uniqueID: n.Device.UniqueID,
+			name:     n.Device.Name,
+			lat:      n.Position.Latitude,
+			lon:      n.Position.Longitude,
+			altitude: n.Position.Altitude,
+			speed:    n.Position.Speed,
+			course:   n.Position.Course,
+			valid:    n.Position.Valid,
+			protocol: n.Position.Protocol,
 		}
 		if out.deviceID == 0 {
 			out.deviceID = n.Position.DeviceID
@@ -516,18 +565,41 @@ func parsePayload(body []byte) (*normalized, error) {
 	return out, nil
 }
 
+// attrMap holds each Traccar `position.attributes` key we've already claimed
+// into a named field on normalized, so pullCommonAttrs can compute `extras`
+// (everything left over) without re-doing the key checks.
+var claimedKeys = map[string]struct{}{
+	"batteryLevel": {}, "fuelLevel": {}, "odometer": {}, "totalDistance": {},
+	"ignition": {}, "motion": {}, "power": {},
+	"io1": {}, "io2": {}, "io3": {}, "io21": {}, "io25": {}, "io26": {}, "io27": {}, "io28": {},
+	"io66": {}, "io67": {}, "io72": {}, "io73": {}, "io74": {}, "io75": {}, "io78": {},
+	"io80": {}, "io199": {}, "io200": {}, "io239": {}, "io240": {}, "io403": {},
+}
+
+// pullCommonAttrs maps Traccar's `position.attributes` into named fields on
+// the normalized struct. Covers both Traccar's semantic keys (ignition,
+// fuelLevel, batteryLevel, odometer, motion) and raw Teltonika AVL ids when
+// Traccar hasn't already translated them (ioNN).
+//
+// Anything not claimed here ends up in n.extras, which the adapter persists
+// verbatim to the `rawAttributes` JSON attribute on the asset — so new
+// sensors are visible immediately even without a code change.
 func pullCommonAttrs(n *normalized, attrs map[string]interface{}) {
+	// Battery percentage
 	if v, ok := attrs["batteryLevel"]; ok {
 		if i, ok := toInt(v); ok {
 			n.battery = &i
 		}
 	}
+	// Fuel percentage or level
 	if v, ok := attrs["fuelLevel"]; ok {
 		if f, ok := toFloat(v); ok {
 			n.fuel = &f
 		}
 	}
-	for _, key := range []string{"odometer", "totalDistance"} {
+	// Odometer (Traccar normalizes some Teltonika devices to "odometer",
+	// others leave as "totalDistance" in meters, io199 otherwise)
+	for _, key := range []string{"odometer", "totalDistance", "io199"} {
 		if v, ok := attrs[key]; ok {
 			if f, ok := toFloat(v); ok {
 				n.odometer = &f
@@ -535,11 +607,125 @@ func pullCommonAttrs(n *normalized, attrs map[string]interface{}) {
 			}
 		}
 	}
+	// Ignition — Traccar semantic key first, then Teltonika io239
 	if v, ok := attrs["ignition"]; ok {
 		if b, ok := v.(bool); ok {
 			n.ignition = &b
 		}
+	} else if v, ok := attrs["io239"]; ok {
+		b := asBool(v)
+		n.ignition = &b
 	}
+	// Movement — Traccar "motion" key, or Teltonika io240
+	if v, ok := attrs["motion"]; ok {
+		if b, ok := v.(bool); ok {
+			n.movement = &b
+		}
+	} else if v, ok := attrs["io240"]; ok {
+		b := asBool(v)
+		n.movement = &b
+	}
+	// External supply voltage (io66 in mV)
+	if v, ok := attrs["io66"]; ok {
+		if f, ok := toFloat(v); ok {
+			n.externalVoltage = &f
+		}
+	} else if v, ok := attrs["power"]; ok {
+		if f, ok := toFloat(v); ok {
+			n.power = &f
+		}
+	}
+	// Internal battery voltage (io67 in mV)
+	if v, ok := attrs["io67"]; ok {
+		if f, ok := toFloat(v); ok {
+			n.batteryVoltage = &f
+		}
+	}
+	// GSM signal quality (io21, 0-5)
+	if v, ok := attrs["io21"]; ok {
+		if i, ok := toInt(v); ok {
+			n.gsmSignal = &i
+		}
+	}
+	// Sleep mode (io200)
+	if v, ok := attrs["io200"]; ok {
+		if i, ok := toInt(v); ok {
+			n.sleepMode = &i
+		}
+	}
+	// Driver ID (io78 iButton as 64-bit int, or io403 driver-1 name)
+	if v, ok := attrs["io403"]; ok {
+		if s, ok := v.(string); ok && s != "" {
+			n.driverID = &s
+		}
+	} else if v, ok := attrs["io78"]; ok {
+		s := fmt.Sprintf("%v", v)
+		if s != "" && s != "0" {
+			n.driverID = &s
+		}
+	}
+	// Digital inputs DIN1-DIN3
+	if v, ok := attrs["io1"]; ok {
+		b := asBool(v)
+		n.din1 = &b
+	}
+	if v, ok := attrs["io2"]; ok {
+		b := asBool(v)
+		n.din2 = &b
+	}
+	if v, ok := attrs["io3"]; ok {
+		b := asBool(v)
+		n.din3 = &b
+	}
+	// BLE beacon temperatures (io25-io28, signed °C × 10 in most FMBs)
+	for i, k := range []string{"io25", "io26", "io27", "io28"} {
+		if v, ok := attrs[k]; ok {
+			if f, ok := toFloat(v); ok {
+				c := f / 10.0
+				n.bleTemp[i] = &c
+			}
+		}
+	}
+	// 1-Wire Dallas temperatures (io72-io75, signed °C × 10)
+	for i, k := range []string{"io72", "io73", "io74", "io75"} {
+		if v, ok := attrs[k]; ok {
+			if f, ok := toFloat(v); ok {
+				c := f / 10.0
+				n.dallasTemp[i] = &c
+			}
+		}
+	}
+
+	// Everything else → extras (for rawAttributes JSON blob)
+	extras := make(map[string]interface{}, len(attrs))
+	for k, v := range attrs {
+		if _, skip := claimedKeys[k]; skip {
+			continue
+		}
+		extras[k] = v
+	}
+	if len(extras) > 0 {
+		n.extras = extras
+	}
+}
+
+// asBool best-effort coerces a Traccar attribute value into a boolean. The
+// protocol handler sometimes sends 0/1, sometimes "true"/"false", sometimes
+// already-typed booleans.
+func asBool(v interface{}) bool {
+	switch x := v.(type) {
+	case bool:
+		return x
+	case float64:
+		return x != 0
+	case int:
+		return x != 0
+	case int64:
+		return x != 0
+	case string:
+		return x == "true" || x == "1" || x == "on"
+	}
+	return false
 }
 
 func handlePosition(w http.ResponseWriter, r *http.Request) {
@@ -591,14 +777,23 @@ func handlePosition(w http.ResponseWriter, r *http.Request) {
 	}
 
 	attrs := map[string]any{
-		"location":  map[string]any{"type": "Point", "coordinates": []float64{p.lon, p.lat}},
-		"altitude":  p.altitude,
-		"speed":     p.speed,
-		"heading":   p.course,
-		"protocol":  p.protocol,
+		"location": map[string]any{"type": "Point", "coordinates": []float64{p.lon, p.lat}},
+		"altitude": p.altitude,
+		"speed":    p.speed,
+		"heading":  p.course,
+		"protocol": p.protocol,
 	}
 	if p.battery != nil {
 		attrs["batteryLevel"] = *p.battery
+	}
+	if p.batteryVoltage != nil {
+		attrs["batteryVoltage"] = *p.batteryVoltage
+	}
+	if p.externalVoltage != nil {
+		attrs["externalVoltage"] = *p.externalVoltage
+	}
+	if p.power != nil {
+		attrs["power"] = *p.power
 	}
 	if p.fuel != nil {
 		attrs["fuelLevel"] = *p.fuel
@@ -608,6 +803,40 @@ func handlePosition(w http.ResponseWriter, r *http.Request) {
 	}
 	if p.ignition != nil {
 		attrs["ignition"] = *p.ignition
+	}
+	if p.movement != nil {
+		attrs["movement"] = *p.movement
+	}
+	if p.gsmSignal != nil {
+		attrs["gsmSignal"] = *p.gsmSignal
+	}
+	if p.sleepMode != nil {
+		attrs["sleepMode"] = *p.sleepMode
+	}
+	if p.driverID != nil {
+		attrs["driverID"] = *p.driverID
+	}
+	if p.din1 != nil {
+		attrs["din1"] = *p.din1
+	}
+	if p.din2 != nil {
+		attrs["din2"] = *p.din2
+	}
+	if p.din3 != nil {
+		attrs["din3"] = *p.din3
+	}
+	for i, t := range p.bleTemp {
+		if t != nil {
+			attrs[fmt.Sprintf("bleTemperature%d", i+1)] = *t
+		}
+	}
+	for i, t := range p.dallasTemp {
+		if t != nil {
+			attrs[fmt.Sprintf("dallasTemperature%d", i+1)] = *t
+		}
+	}
+	if len(p.extras) > 0 {
+		attrs["rawAttributes"] = p.extras
 	}
 
 	if err := updateAttributes(assetID, attrs); err != nil {

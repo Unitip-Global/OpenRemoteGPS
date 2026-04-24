@@ -80,12 +80,13 @@ func handleWebhook(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if !forwardInvalid && !p.Position.Valid {
-		log.Printf("drop invalid deviceId=%d name=%q lat=%.5f lon=%.5f attrs=%d (set FORWARD_INVALID=true to forward)",
-			deviceID, p.Device.Name, p.Position.Latitude, p.Position.Longitude, len(p.Position.Attributes))
-		w.WriteHeader(http.StatusNoContent)
-		return
-	}
+	// NOTE: we no longer drop invalid positions here — the adapter handles
+	// that nuance (it keeps telemetry attrs like BLE temperature / ignition
+	// /  battery but skips overwriting location when valid=false). Dropping
+	// at the transformer threw away perfectly good sensor data from devices
+	// without a current GPS fix (indoor, sat=0 but BLE beacons still
+	// reporting).
+	_ = forwardInvalid
 
 	resp, err := client.Post(adapterURL, "application/json", bytes.NewReader(body))
 	if err != nil {

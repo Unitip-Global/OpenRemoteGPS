@@ -239,11 +239,20 @@ var baselineAttrTypes = map[string]string{
 	// Driver ID (iButton / RFID)
 	"driverID": "text", // Teltonika io78 (iButton) or io403 (driver 1 name)
 
-	// BLE beacon temperatures (reefer / cold-chain)
+	// BLE beacon temperatures (reefer / cold-chain) — Eurosens Degree BT,
+	// Elsys ERS, etc. paired over Bluetooth LE to the Teltonika tracker.
 	"bleTemperature1": "number",
 	"bleTemperature2": "number",
 	"bleTemperature3": "number",
 	"bleTemperature4": "number",
+	"bleHumidity1":    "number",
+	"bleHumidity2":    "number",
+	"bleHumidity3":    "number",
+	"bleHumidity4":    "number",
+	"bleBattery1":     "positiveInteger",
+	"bleBattery2":     "positiveInteger",
+	"bleBattery3":     "positiveInteger",
+	"bleBattery4":     "positiveInteger",
 
 	// 1-Wire Dallas temperature probes
 	"dallasTemperature1": "number",
@@ -519,8 +528,10 @@ type normalized struct {
 	odometer        *float64
 	driverID        *string
 	din1, din2, din3 *bool
-	bleTemp          [4]*float64
-	dallasTemp       [4]*float64
+	bleTemp     [4]*float64
+	bleHumidity [4]*float64
+	bleBattery  [4]*float64
+	dallasTemp  [4]*float64
 
 	// Every Traccar attribute that wasn't mapped above. Written verbatim to
 	// `rawAttributes` so no custom sensor goes missing on the dashboard side.
@@ -568,9 +579,23 @@ func parsePayload(body []byte) (*normalized, error) {
 // attrMap holds each Traccar `position.attributes` key we've already claimed
 // into a named field on normalized, so pullCommonAttrs can compute `extras`
 // (everything left over) without re-doing the key checks.
+//
+// Traccar emits friendly semantic keys for the parameters it recognizes
+// (ignition, motion, batteryLevel, bleTemp1, in1, power, ...) but falls back
+// to raw Teltonika AVL ids (ioNN) for everything it doesn't translate.
+// We claim both spellings so the `extras`/rawAttributes blob contains only
+// truly-unknown keys.
 var claimedKeys = map[string]struct{}{
+	// Traccar semantic keys
 	"batteryLevel": {}, "fuelLevel": {}, "odometer": {}, "totalDistance": {},
 	"ignition": {}, "motion": {}, "power": {},
+	"in1": {}, "in2": {}, "in3": {},
+	"bleTemp1": {}, "bleTemp2": {}, "bleTemp3": {}, "bleTemp4": {},
+	"bleHumidity1": {}, "bleHumidity2": {}, "bleHumidity3": {}, "bleHumidity4": {},
+	"bleBattery1": {}, "bleBattery2": {}, "bleBattery3": {}, "bleBattery4": {},
+	"driverUniqueId": {},
+
+	// Raw Teltonika AVL ids we also handle as fallbacks
 	"io1": {}, "io2": {}, "io3": {}, "io21": {}, "io25": {}, "io26": {}, "io27": {}, "io28": {},
 	"io66": {}, "io67": {}, "io72": {}, "io73": {}, "io74": {}, "io75": {}, "io78": {},
 	"io80": {}, "io199": {}, "io200": {}, "io239": {}, "io240": {}, "io403": {},
@@ -664,25 +689,51 @@ func pullCommonAttrs(n *normalized, attrs map[string]interface{}) {
 			n.driverID = &s
 		}
 	}
-	// Digital inputs DIN1-DIN3
-	if v, ok := attrs["io1"]; ok {
-		b := asBool(v)
-		n.din1 = &b
+	// Digital inputs DIN1-DIN3 — Traccar semantic in1/in2/in3, fallback io1/io2/io3
+	for i, keys := range [][2]string{{"in1", "io1"}, {"in2", "io2"}, {"in3", "io3"}} {
+		for _, k := range keys {
+			if v, ok := attrs[k]; ok {
+				b := asBool(v)
+				switch i {
+				case 0:
+					n.din1 = &b
+				case 1:
+					n.din2 = &b
+				case 2:
+					n.din3 = &b
+				}
+				break
+			}
+		}
 	}
-	if v, ok := attrs["io2"]; ok {
-		b := asBool(v)
-		n.din2 = &b
-	}
-	if v, ok := attrs["io3"]; ok {
-		b := asBool(v)
-		n.din3 = &b
-	}
-	// BLE beacon temperatures (io25-io28, signed °C × 10 in most FMBs)
-	for i, k := range []string{"io25", "io26", "io27", "io28"} {
-		if v, ok := attrs[k]; ok {
+	// BLE beacon temperatures — Traccar already converts to °C for recognized
+	// beacons (Eurosens Degree BT, Elsys ERS, etc.) and exposes as bleTempN.
+	// When Traccar didn't translate, use io25-io28 (Teltonika raw, °C × 10).
+	for i, pair := range [][2]string{{"bleTemp1", "io25"}, {"bleTemp2", "io26"}, {"bleTemp3", "io27"}, {"bleTemp4", "io28"}} {
+		if v, ok := attrs[pair[0]]; ok {
+			if f, ok := toFloat(v); ok {
+				n.bleTemp[i] = &f // already °C
+			}
+		} else if v, ok := attrs[pair[1]]; ok {
 			if f, ok := toFloat(v); ok {
 				c := f / 10.0
 				n.bleTemp[i] = &c
+			}
+		}
+	}
+	// BLE beacon humidity (Traccar semantic)
+	for i, k := range []string{"bleHumidity1", "bleHumidity2", "bleHumidity3", "bleHumidity4"} {
+		if v, ok := attrs[k]; ok {
+			if f, ok := toFloat(v); ok {
+				n.bleHumidity[i] = &f
+			}
+		}
+	}
+	// BLE beacon battery level (Traccar semantic, percent)
+	for i, k := range []string{"bleBattery1", "bleBattery2", "bleBattery3", "bleBattery4"} {
+		if v, ok := attrs[k]; ok {
+			if f, ok := toFloat(v); ok {
+				n.bleBattery[i] = &f
 			}
 		}
 	}
@@ -750,10 +801,11 @@ func handlePosition(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusNoContent)
 		return
 	}
-	if !cfg.forwardInvalid && !p.valid {
-		w.WriteHeader(http.StatusNoContent)
-		return
-	}
+	// valid=false means the device doesn't have a current GPS fix (sat=0, indoor)
+	// but the rest of the telemetry (BLE temp, ignition, battery, etc.) is still
+	// real and worth pushing. Drop ONLY the location update in that case instead
+	// of skipping the entire position. FORWARD_INVALID=true keeps writing the
+	// (stale) location too.
 
 	// Resolve device name if missing
 	if p.name == "" {
@@ -777,11 +829,17 @@ func handlePosition(w http.ResponseWriter, r *http.Request) {
 	}
 
 	attrs := map[string]any{
-		"location": map[string]any{"type": "Point", "coordinates": []float64{p.lon, p.lat}},
 		"altitude": p.altitude,
 		"speed":    p.speed,
 		"heading":  p.course,
 		"protocol": p.protocol,
+	}
+	// Only overwrite location when the GPS fix is current — stale coords
+	// marked valid=false would otherwise freeze the asset away from where
+	// the vehicle actually went offline. Set FORWARD_INVALID=true to keep
+	// writing last-known location anyway.
+	if p.valid || cfg.forwardInvalid {
+		attrs["location"] = map[string]any{"type": "Point", "coordinates": []float64{p.lon, p.lat}}
 	}
 	if p.battery != nil {
 		attrs["batteryLevel"] = *p.battery
@@ -828,6 +886,16 @@ func handlePosition(w http.ResponseWriter, r *http.Request) {
 	for i, t := range p.bleTemp {
 		if t != nil {
 			attrs[fmt.Sprintf("bleTemperature%d", i+1)] = *t
+		}
+	}
+	for i, t := range p.bleHumidity {
+		if t != nil {
+			attrs[fmt.Sprintf("bleHumidity%d", i+1)] = *t
+		}
+	}
+	for i, t := range p.bleBattery {
+		if t != nil {
+			attrs[fmt.Sprintf("bleBattery%d", i+1)] = *t
 		}
 	}
 	for i, t := range p.dallasTemp {

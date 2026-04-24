@@ -214,14 +214,19 @@ var assetCache sync.Map // map[int64]string
 var attrsReady sync.Map // map[string]bool
 
 var baselineAttrTypes = map[string]string{
-	"altitude":     "number",
-	"speed":        "number",
-	"heading":      "number",
-	"protocol":     "text",
-	"batteryLevel": "positiveInteger",
-	"fuelLevel":    "number",
-	"ignition":     "boolean",
-	"odometer":     "number",
+	"altitude":        "number",
+	"speed":           "number",
+	"heading":         "number",
+	"protocol":        "text",
+	"batteryLevel":    "positiveInteger",
+	"fuelLevel":       "number",
+	"ignition":        "boolean",
+	"odometer":        "number",
+	"power":           "number",
+	"bleTemperature1": "number",
+	"bleTemperature2": "number",
+	"bleTemperature3": "number",
+	"bleTemperature4": "number",
 }
 
 func orURL(p string) string {

@@ -403,6 +403,40 @@ def ensure_rules(tok: str) -> None:
         print(f"[rule] {name}: {ok}")
 
 
+def ensure_map_config(tok: str) -> None:
+    """Set the realm's default map view to Romania (Bucharest-centered).
+
+    OpenRemote keeps one MapConfig per-manager with an `options` dict keyed by
+    realm name. Adding a `unitip` entry means the UI opens centered on Romania
+    for that realm without polluting `master` or other tenants.
+    """
+    r = requests.get(
+        f"{OR_BASE_URL}/api/{OR_REALM}/map",
+        headers=or_headers(tok),
+        timeout=30,
+    )
+    r.raise_for_status()
+    cfg = r.json()
+    cfg.setdefault("options", {})[OR_REALM] = {
+        "center": [26.1025, 44.4268],          # Bucharest lon, lat
+        "zoom": 7,                              # entire country
+        "bounds": [20.26, 43.62, 29.72, 48.27], # Romania
+        "minZoom": 5,
+        "maxZoom": 18,
+        "boxZoom": True,
+    }
+    r = requests.put(
+        f"{OR_BASE_URL}/api/{OR_REALM}/map",
+        headers=or_headers(tok),
+        json=cfg,
+        timeout=30,
+    )
+    if r.status_code >= 400:
+        print(f"[map] WARN failed to set realm map config: {r.status_code} {r.text[:150]}")
+    else:
+        print(f"[map] unitip map center set to Bucharest, zoom 7, bounds Romania")
+
+
 def main() -> None:
     if not OR_ADMIN_PASSWORD:
         die("OR_ADMIN_PASSWORD env var is required")
@@ -414,8 +448,10 @@ def main() -> None:
     seed_tracker_assets(tok, fleet_id)
     tok = or_token()  # refresh before long chain
     ensure_rules(tok)
+    ensure_map_config(tok)
 
     print("\nDone. Enable rules from the Manager UI after validating thresholds.")
+    print(f"Open the platform at: {OR_BASE_URL}/manager/?realm={OR_REALM}")
 
 
 if __name__ == "__main__":

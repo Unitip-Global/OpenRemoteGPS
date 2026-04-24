@@ -17,6 +17,8 @@ and fills in only what is missing.
 - Ten baseline realm rulesets (speed, battery, fuel, ignition, weekly
   report) — all created **disabled**; enable from the Rules UI after
   reviewing the thresholds for your fleet.
+- A `unitip` entry in the manager's MapConfig so the realm's map opens
+  centered on Romania (Bucharest), zoom 7, bounded to the country.
 
 **Run:**
 
